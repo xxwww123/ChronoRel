@@ -59,6 +59,8 @@ Each expert has independent bottleneck weights, timestep modulation, and output 
 
 The amplitude path uses 16×16 windows, stride 8, a Hann window, and eight pixels of reflection padding. Analysis and synthesis use the same window. Weighted overlap-add divides by the accumulated window products. Conjugate-frequency symmetrization preserves real-valued inverse transforms. Each level has a positive, learnable amplitude bound initialized to `0.10`.
 
+Custom Hann windows require `1 <= stride <= window_size - 2` and `padding >= stride` to keep nonzero coverage at every output position. The padded decoder grid must fit at least one full window on each axis.
+
 Haar filters are orthonormal. Detail bands are ordered as LH, HL, and HH within each image channel. A cue is valid only when its entire image-space support is visible. Resampling normalizes by interpolated validity. The spatial path also processes generated decoder features in unsupported regions.
 
 `response_targets` takes raw RGB predictions in `[0, 1]`. Gain is 100 times the missing-region MSE reduction; perturbation is the unscaled observed-region MSE relative to the shared-only prediction. These tensors are computed before compositing and detached. The full diffusion trajectory and matched-intervention scheduler belong to the training pipeline.
@@ -73,6 +75,4 @@ Channel widths, attention dimensions, and per-layer projection sizes must be mat
 python -m unittest discover -s tests -v
 ```
 
-The tests cover tensor shapes, closed-form optimality, feasibility, sparse dispatch, gradient flow, Haar validity, overlap-add identity, and observed-pixel compositing. They do not run a restoration benchmark.
-
-Component checks: 41 tests passed with Python 3.12 and PyTorch 2.4.1 on CPU.
+The tests cover tensor shapes, closed-form optimality, feasibility, sparse dispatch, gradient flow at zero support, Haar validity, overlap-add identity and coverage, and observed-pixel compositing. They do not run a restoration benchmark.

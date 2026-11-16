@@ -22,11 +22,20 @@ def resize_map(x: Tensor, size: tuple[int, int], mode: str = 'bilinear') -> Tens
     return F.interpolate(x, size=size, mode=mode)
 
 
+def normalize_support(numerator: Tensor, support: Tensor, scale: float = 1.) -> Tensor:
+    output_dtype = torch.promote_types(numerator.dtype, support.dtype)
+    work_dtype = torch.float32 if output_dtype in (torch.float16, torch.bfloat16) else output_dtype
+    support = support.to(work_dtype)
+    valid = support > 0
+    denominator = torch.where(valid, support.clamp_min(1e-8), 1.)
+    normalized = (numerator.to(work_dtype) * scale) / denominator
+    return torch.where(valid, normalized, 0.).to(output_dtype)
+
+
 def validity_resample(features: Tensor, support: Tensor, size: tuple[int, int]) -> tuple[Tensor, Tensor]:
     weight = resize_map(support, size)
     numerator = resize_map(features * support, size)
-    normalized = numerator / weight.clamp_min(1e-8)
-    return torch.where(weight > 0, normalized, 0), weight
+    return normalize_support(numerator, weight), weight
 
 
 def weighted_softmax(logits: Tensor, weights: Tensor, dim: int = -1) -> Tensor:

@@ -15,8 +15,8 @@ class WindowedAmplitude(nn.Module):
                  window_size: int = 16, stride: int = 8, padding: int = 8,
                  amplitude_bound: float = .1):
         super().__init__()
-        if window_size < 2 or not 0 < stride < window_size or padding < stride:
-            raise ValueError('require window_size > stride > 0 and padding >= stride')
+        if not 1 <= stride <= window_size - 2 or padding < stride:
+            raise ValueError('Hann windows require 1 <= stride <= window_size - 2 and padding >= stride')
         if amplitude_bound <= 0:
             raise ValueError('amplitude_bound must be positive')
         self.channels = channels
@@ -24,8 +24,6 @@ class WindowedAmplitude(nn.Module):
         self.modulator = nn.Sequential(nn.Conv2d(channels + condition_channels + 2, hidden_dim, 3, padding=1),
                                        nn.SiLU(), nn.Conv2d(hidden_dim, channels, 1))
         self.raw_amplitude_bound = nn.Parameter(torch.tensor(math.log(math.expm1(amplitude_bound))))
-        hann = torch.hann_window(window_size, periodic=False)
-        self.register_buffer('window', torch.outer(hann, hann), persistent=False)
         self.register_buffer('negative_frequency', (-torch.arange(window_size)) % window_size, persistent=False)
 
     @property
@@ -41,6 +39,8 @@ class WindowedAmplitude(nn.Module):
         padded = F.pad(state, (pad, pad, pad, pad), mode='reflect')
         extra_h = (-(padded.shape[-2] - size)) % stride
         extra_w = (-(padded.shape[-1] - size)) % stride
+        if min(padded.shape[-2] + extra_h, padded.shape[-1] + extra_w) < size:
+            raise ValueError('padded decoder grid is smaller than the amplitude window')
         if extra_h or extra_w:
             padded = F.pad(padded, (0, extra_w, 0, extra_h), mode='reflect')
         columns = F.unfold(padded, kernel_size=size, stride=stride)
@@ -50,7 +50,8 @@ class WindowedAmplitude(nn.Module):
         modulation = .5 * (modulation + modulation.index_select(-2, negative).index_select(-1, negative))
         work_dtype = torch.float64 if decoder.dtype == torch.float64 else torch.float32
         with torch.autocast(device_type=decoder.device.type, enabled=False):
-            window = self.window.to(device=decoder.device, dtype=work_dtype)[None, None]
+            hann = torch.hann_window(size, periodic=False, dtype=work_dtype, device=decoder.device)
+            window = torch.outer(hann, hann)[None, None]
             patches = windows[:, :channels].to(work_dtype)
             spectrum = torch.fft.fft2(patches * window, norm='ortho')
             scale = (self.amplitude_bound.to(work_dtype) * modulation.to(work_dtype).tanh()).exp()
@@ -60,8 +61,8 @@ class WindowedAmplitude(nn.Module):
             merged = F.fold(reconstructed, output_size=padded.shape[-2:], kernel_size=size, stride=stride)
             weights = window.square().reshape(1, size * size, 1).expand(1, -1, count)
             denominator = F.fold(weights, output_size=padded.shape[-2:], kernel_size=size, stride=stride)
-            normalized = merged / denominator.clamp_min(torch.finfo(work_dtype).tiny)
-            normalized = normalized[:, :, pad:pad + height, pad:pad + width]
+            crop = (..., slice(pad, pad + height), slice(pad, pad + width))
+            normalized = merged[crop] / denominator[crop]
             return (normalized - decoder.to(work_dtype)).to(decoder.dtype)
 
 

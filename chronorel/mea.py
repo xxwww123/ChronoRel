@@ -7,7 +7,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .ops import resize_map, time_map, weighted_softmax
+from .ops import normalize_support, resize_map, time_map, weighted_softmax
 
 
 class MEA(nn.Module):
@@ -71,8 +71,7 @@ class MEA(nn.Module):
                             2 * (locations[..., 1] + .5) / height - 1), dim=-1)
         sampled_support = self._sample(support, grid).squeeze(-1) * inside
         sampled_observation = self._sample(observation * support, grid)
-        sampled_observation = sampled_observation / sampled_support[..., None].clamp_min(1e-8)
-        sampled_observation = torch.where(sampled_support[..., None] > 0, sampled_observation, 0)
+        sampled_observation = normalize_support(sampled_observation, sampled_support[..., None])
         sampled_context = self._sample(conditioned, grid)
         queries = conditioned.permute(0, 2, 3, 1)
         scale = math.sqrt(self.attention_dim)

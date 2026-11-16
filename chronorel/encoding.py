@@ -8,6 +8,8 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from .ops import normalize_support
+
 
 class ValidityConv2d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, stride: int = 2):
@@ -23,7 +25,7 @@ class ValidityConv2d(nn.Module):
         count = F.conv2d(support, self.support_kernel.to(support), stride=self.conv.stride,
                          padding=self.conv.padding)
         features = self.conv(x * support)
-        features = features * (self.area / count.clamp_min(1e-8)) + self.bias[None, :, None, None]
+        features = normalize_support(features, count, scale=self.area) + self.bias[None, :, None, None]
         features = torch.where(count > 0, F.silu(features), 0)
         return features, count / self.area
 

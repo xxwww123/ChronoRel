@@ -6,6 +6,10 @@ from torch.nn import functional as F
 
 
 def regional_mse(prediction: Tensor, reference: Tensor, region: Tensor, delta: float = 1e-8) -> Tensor:
+    dtype = torch.promote_types(torch.promote_types(prediction.dtype, reference.dtype), region.dtype)
+    if dtype in (torch.float16, torch.bfloat16):
+        dtype = torch.float32
+    prediction, reference, region = prediction.to(dtype), reference.to(dtype), region.to(dtype)
     axes = tuple(range(1, prediction.ndim))
     numerator = ((prediction - reference).square() * region).sum(dim=axes)
     denominator = prediction.shape[1] * region.sum(dim=axes) + delta

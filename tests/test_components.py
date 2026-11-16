@@ -17,9 +17,13 @@ class EncodingTests(unittest.TestCase):
 
     def test_no_support_produces_zero(self):
         layer = ValidityConv2d(3, 4)
-        output, support = layer(torch.randn(2, 3, 12, 16), torch.zeros(2, 1, 12, 16))
+        x = torch.randn(2, 3, 12, 16, requires_grad=True)
+        output, support = layer(x, torch.zeros(2, 1, 12, 16))
         torch.testing.assert_close(output, torch.zeros_like(output))
         torch.testing.assert_close(support, torch.zeros_like(support))
+        output.sum().backward()
+        torch.testing.assert_close(x.grad, torch.zeros_like(x))
+        torch.testing.assert_close(layer.conv.weight.grad, torch.zeros_like(layer.conv.weight))
 
     def test_support_normalization(self):
         layer = ValidityConv2d(1, 1, stride=1)
@@ -45,6 +49,15 @@ class EncodingTests(unittest.TestCase):
         result, weight = validity_resample(features, support, (1, 1))
         torch.testing.assert_close(result, torch.tensor([[[[2.]]]]))
         torch.testing.assert_close(weight, torch.tensor([[[[.5]]]]))
+
+    def test_fp16_resampling_zero_support_gradients(self):
+        features = torch.tensor([[[[2., 3.]]]], dtype=torch.float16, requires_grad=True)
+        support = torch.tensor([[[[0., .5]]]], dtype=torch.float16, requires_grad=True)
+        result, _ = validity_resample(features, support, (1, 2))
+        torch.testing.assert_close(result, features.new_tensor([[[[0., 3.]]]]))
+        result.sum().backward()
+        torch.testing.assert_close(features.grad, features.new_tensor([[[[0., 1.]]]]))
+        torch.testing.assert_close(support.grad, torch.zeros_like(support))
 
     def test_all_masked_softmax(self):
         result = weighted_softmax(torch.full((2, 4), 1000.), torch.zeros(2, 4))
@@ -78,6 +91,8 @@ class MEATests(unittest.TestCase):
         out = self.layer(self.brush, self.observation, torch.zeros_like(self.support),
                          self.mask, self.time, nn.Identity())
         self.assertTrue(torch.isfinite(out).all())
+        out.square().mean().backward()
+        self.assertTrue(torch.isfinite(self.layer.offset_predictor[-1].weight.grad).all())
 
     def test_rotation_consistency_on_rectangular_grid(self):
         loss = self.layer.rotation_consistency_loss(self.brush, self.observation, self.support,
@@ -172,6 +187,26 @@ class DecoderTests(unittest.TestCase):
                           torch.ones(1, 1, 19, 23))
         torch.testing.assert_close(residual, torch.zeros_like(residual), rtol=0, atol=1e-6)
 
+    def test_custom_hann_window_at_coverage_limit(self):
+        layer = WindowedAmplitude(2, 3, hidden_dim=6, window_size=7, stride=5, padding=5)
+        for parameter in layer.modulator.parameters():
+            nn.init.zeros_(parameter)
+        x = torch.randn(1, 2, 19, 23)
+        mask = torch.zeros(1, 1, 19, 23)
+        residual = layer(x, torch.randn(1, 3, 19, 23), mask, 1 - mask)
+        torch.testing.assert_close(residual, torch.zeros_like(residual), rtol=0, atol=2e-6)
+
+    def test_rejects_hann_window_with_uncovered_seams(self):
+        with self.assertRaisesRegex(ValueError, 'Hann windows require'):
+            WindowedAmplitude(2, 3, hidden_dim=6, window_size=16, stride=15, padding=15)
+
+    def test_rejects_grid_smaller_than_hann_window(self):
+        layer = WindowedAmplitude(2, 3, hidden_dim=6, window_size=48, stride=8, padding=8)
+        x = torch.randn(1, 2, 12, 64)
+        mask = torch.zeros(1, 1, 12, 64)
+        with self.assertRaisesRegex(ValueError, 'padded decoder grid is smaller'):
+            layer(x, torch.randn(1, 3, 12, 64), mask, 1 - mask)
+
     def test_zero_amplitude_stays_zero(self):
         layer = WindowedAmplitude(2, 3, hidden_dim=6)
         x = torch.zeros(1, 2, 24, 24)
@@ -227,6 +262,15 @@ class ObjectiveTests(unittest.TestCase):
     def test_empty_region(self):
         result = regional_mse(torch.ones(1, 3, 4, 4), torch.zeros(1, 3, 4, 4), torch.zeros(1, 1, 4, 4))
         self.assertEqual(result.item(), 0)
+
+    def test_fp16_empty_region_gradients(self):
+        prediction = torch.ones(1, 3, 4, 4, dtype=torch.float16, requires_grad=True)
+        reference = torch.zeros_like(prediction)
+        region = torch.zeros(1, 1, 4, 4, dtype=torch.float16)
+        result = regional_mse(prediction, reference, region)
+        torch.testing.assert_close(result, torch.zeros(1, dtype=torch.float32))
+        result.sum().backward()
+        torch.testing.assert_close(prediction.grad, torch.zeros_like(prediction))
 
     def test_fitting_loss_detaches_targets(self):
         g, h, d = [torch.tensor([v], requires_grad=True) for v in (.3, .2, .01)]
